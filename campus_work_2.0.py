@@ -47,8 +47,8 @@ years_sel = st.sidebar.slider("Year range", min_y, max_y, (min_y, max_y))
 filter_months = st.sidebar.checkbox("Month-range filter", False)
 if filter_months:
     tmp = pd.read_csv("DF_WO_GaTech.csv", parse_dates=["WORKDATE"], usecols=["WORKDATE"])
-    mn, mx = tmp["WORKDATE"].dt.month.min(), tmp["WORKDATE"].dt.month.max()
-    months_sel = st.sidebar.slider("Month range", int(mn), int(mx), (int(mn), int(mx)))
+    mn, mx = int(tmp["WORKDATE"].dt.month.min()), int(tmp["WORKDATE"].dt.month.max())
+    months_sel = st.sidebar.slider("Month range", mn, mx, (mn, mx))
 else:
     months_sel = (None, None)
 
@@ -99,23 +99,6 @@ def load_buildings():
 
 gdf = load_buildings()
 
-# ─── Heat‐map coloring ───────────────────────────────────────────────────────
-cmap = cm.get_cmap("OrRd")
-
-def compute_color(total):
-    if total <= 0:
-        # zero orders → light gray
-        return [200, 200, 200, 80]
-    # normalize 1…max_orders → 0…1
-    raw   = float(total) / max_orders
-    # bump minimum visible heat to 20%
-    ratio = min(0.2 + 0.8 * raw, 1.0)
-    r, g, b, _ = cmap(ratio)
-    return [int(r*255), int(g*255), int(b*255), 180]
-
-gdf["order_sum"]  = gdf["FAC_NAME"].map(order_sums).fillna(0)
-gdf["fill_color"] = gdf["order_sum"].apply(compute_color)
-
 # ─── Name→FAC_ID matching (manual + fuzzy) ─────────────────────────────────
 manual_map = {
     "COLLEGE OF COMPUTING": "COLL OF COMPUTI",
@@ -134,6 +117,26 @@ def find_df_key(name: str):
         return n, "exact"
     m = get_close_matches(n, craft_counts.index, n=1, cutoff=0.7)
     return (m[0], "fuzzy") if m else (None, "none")
+
+# ─── Compute per‐feature order_sum via matcher ─────────────────────────────
+def lookup_total(name: str) -> int:
+    key, _ = find_df_key(name)
+    return int(order_sums.get(key, 0))
+
+gdf["order_sum"] = gdf["FAC_NAME"].apply(lookup_total)
+
+# ─── Heat‐map coloring ───────────────────────────────────────────────────────
+cmap = cm.get_cmap("OrRd")
+
+def compute_color(total):
+    if total <= 0:
+        return [200, 200, 200, 80]  # light gray
+    raw   = float(total) / max_orders
+    ratio = min(0.2 + 0.8 * raw, 1.0)
+    r, g, b, _ = cmap(ratio)
+    return [int(r*255), int(g*255), int(b*255), 180]
+
+gdf["fill_color"] = gdf["order_sum"].apply(compute_color)
 
 # ─── Pie‐chart rendering ────────────────────────────────────────────────────
 @st.cache_data
@@ -196,7 +199,7 @@ layer = pdk.Layer(
 deck = pdk.Deck(
     layers=[layer],
     initial_view_state=view,
-    tooltip={"html": "{tooltip_html}", "style": {"backgroundColor":"rgba(0,0,0,0.8)","color":"white"}}
+    tooltip={"html":"{tooltip_html}", "style":{"backgroundColor":"rgba(0,0,0,0.8)","color":"white"}}
 )
 
 st.write("Hover over a building to see its pie-chart and color‐coded fill by total orders.")
