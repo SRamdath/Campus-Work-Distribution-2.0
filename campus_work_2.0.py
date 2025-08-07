@@ -98,6 +98,7 @@ manual_map = {
     "COLLEGE OF COMPUTING": "COLL OF COMPUTI",
     "COC":                   "COLL OF COMPUTI",
     "575 14TH STREET":       "575 14TH STREET",
+    "KLAUS BLDG": "ADV COMP BLDG.",
 
     # Add more here when confirmed
 }
@@ -199,6 +200,7 @@ deck = pdk.Deck(
 
 st.write("Hover a building for its work-order pie chart and heat color.")
 st.pydeck_chart(deck, use_container_width=True)
+
 
 
 
