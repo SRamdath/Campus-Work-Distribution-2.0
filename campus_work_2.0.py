@@ -80,10 +80,10 @@ def load_and_filter_orders(years, months, season):
 
 df = load_and_filter_orders(years_sel, months_sel, season_months)
 
-# ─── Count up total crafts per FAC_ID ────────────────────────────────────────
+# ─── Compute craft counts & totals ──────────────────────────────────────────
 craft_counts = df.groupby("FAC_ID")["CRAFT"].value_counts().unstack(fill_value=0)
-order_sums   = craft_counts.sum(axis=1)       # total orders per building
-max_orders   = order_sums.max() or 1          # avoid zero-division
+order_sums   = craft_counts.sum(axis=1)
+max_orders   = order_sums.max() or 1
 
 # ─── Load building footprints ───────────────────────────────────────────────
 @st.cache_data
@@ -99,25 +99,29 @@ def load_buildings():
 
 gdf = load_buildings()
 
-# ─── Compute a “heat color” per footprint ───────────────────────────────────
+# ─── Heat‐map coloring ───────────────────────────────────────────────────────
 cmap = cm.get_cmap("OrRd")
+
 def compute_color(total):
     if total <= 0:
-        return [200, 200, 200, 80]   # light gray for zero
-    ratio = float(total) / max_orders
+        # zero orders → light gray
+        return [200, 200, 200, 80]
+    # normalize 1…max_orders → 0…1
+    raw   = float(total) / max_orders
+    # bump minimum visible heat to 20%
+    ratio = min(0.2 + 0.8 * raw, 1.0)
     r, g, b, _ = cmap(ratio)
     return [int(r*255), int(g*255), int(b*255), 180]
 
-# attach totals + fill_color
-gdf["order_sum"]   = gdf["FAC_NAME"].map(order_sums).fillna(0)
-gdf["fill_color"]  = gdf["order_sum"].apply(compute_color)
+gdf["order_sum"]  = gdf["FAC_NAME"].map(order_sums).fillna(0)
+gdf["fill_color"] = gdf["order_sum"].apply(compute_color)
 
-# ─── Matching FAC_NAME → FAC_ID (manual + fuzzy) ────────────────────────────
+# ─── Name→FAC_ID matching (manual + fuzzy) ─────────────────────────────────
 manual_map = {
     "COLLEGE OF COMPUTING": "COLL OF COMPUTI",
     "COC":                   "COLL OF COMPUTI",
     "575 14TH STREET":       "575 14TH STREET",
-    # …add more overrides…
+    # add more overrides here...
 }
 
 def find_df_key(name: str):
@@ -131,18 +135,19 @@ def find_df_key(name: str):
     m = get_close_matches(n, craft_counts.index, n=1, cutoff=0.7)
     return (m[0], "fuzzy") if m else (None, "none")
 
-# ─── Pie‐chart renderer (cached) ─────────────────────────────────────────────
+# ─── Pie‐chart rendering ────────────────────────────────────────────────────
 @st.cache_data
 def make_pie_datauri_cached(idx, vals):
     s = pd.Series(vals, index=idx)
     fig, ax = plt.subplots(figsize=(2,2))
     cols = [CRAFT_COLORS.get(c, "#CCCCCC") for c in s.index]
-    auto = lambda p: f"{p:.0f}%" if p>=PCT_THRESHOLD else ""
+    auto = lambda p: f"{p:.0f}%" if p >= PCT_THRESHOLD else ""
     ax.pie(s, autopct=auto, startangle=90, colors=cols, wedgeprops={"edgecolor":"white"})
     ax.axis("equal")
     buf = BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", transparent=True)
-    plt.close(fig); buf.seek(0)
+    plt.close(fig)
+    buf.seek(0)
     return "data:image/png;base64," + base64.b64encode(buf.read()).decode()
 
 def make_pie_datauri(counts):
@@ -151,34 +156,32 @@ def make_pie_datauri(counts):
 
 # ─── Tooltip HTML ───────────────────────────────────────────────────────────
 def build_tooltip_html(row):
-    nm, method = find_df_key(row["FAC_NAME"])
+    nm, _ = find_df_key(row["FAC_NAME"])
     if not nm or nm not in craft_counts.index:
         return f"<div><strong>{row['FAC_NAME']}</strong><br>No work-order data</div>"
     ct  = craft_counts.loc[nm]
-    ct  = ct[ct>0]
-    pct = (ct/ct.sum()*100).round(1)
+    ct  = ct[ct > 0]
+    pct = (ct / ct.sum() * 100).round(1)
     uri = make_pie_datauri(ct)
-
     lines = []
     for craft, p in zip(ct.index, pct):
         col = CRAFT_COLORS.get(craft, "#CCCCCC")
         sw  = f"<span style='display:inline-block;width:12px;height:12px;background:{col};margin-right:4px;'></span>"
         lines.append(f"{sw}{craft}: {p}%")
     legend = "<br>".join(lines)
-
     return (
-      "<div style='text-align:center;'>"
-        f"<strong>{row['FAC_NAME']}</strong><br>"
-        f"<img src='{uri}' width='120px'><br>"
-        "<div style='column-count:2; column-gap:8px; font-size:0.9em; overscroll-behavior:contain;'>"
-          f"{legend}"
+        "<div style='text-align:center;'>"
+          f"<strong>{row['FAC_NAME']}</strong><br>"
+          f"<img src='{uri}' width='120px'><br>"
+          "<div style='column-count:2;column-gap:8px;font-size:0.9em;overscroll-behavior:contain;'>"
+            f"{legend}"
+          "</div>"
         "</div>"
-      "</div>"
     )
 
 gdf["tooltip_html"] = gdf.apply(build_tooltip_html, axis=1)
 
-# ─── Render Pydeck layer with heat-fill ────────────────────────────────────
+# ─── Render Pydeck map ──────────────────────────────────────────────────────
 view = pdk.ViewState(latitude=33.7756, longitude=-84.3963, zoom=16, pitch=0)
 layer = pdk.Layer(
     "GeoJsonLayer",
@@ -193,13 +196,9 @@ layer = pdk.Layer(
 deck = pdk.Deck(
     layers=[layer],
     initial_view_state=view,
-    tooltip={"html":"{tooltip_html}",
-             "style":{"backgroundColor":"rgba(0,0,0,0.8)","color":"white"}}
+    tooltip={"html": "{tooltip_html}", "style": {"backgroundColor":"rgba(0,0,0,0.8)","color":"white"}}
 )
 
-st.write("Hover over a building to see its pie-chart and hover‐colored footprint by total orders.")
+st.write("Hover over a building to see its pie-chart and color‐coded fill by total orders.")
 st.pydeck_chart(deck, use_container_width=True)
 
-st.write("Hover over a building to see its pie-chart and legend.")
-
-st.pydeck_chart(deck)
