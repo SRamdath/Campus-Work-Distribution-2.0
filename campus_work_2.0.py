@@ -8,11 +8,11 @@ from io import BytesIO
 import base64
 from difflib import get_close_matches
 
-# — Page setup
+# Page setup
 st.set_page_config(page_title="Campus Building Work Orders", layout="wide")
 st.title("Map of Campus and Building Work-Orders")
 
-# — Color palettes & thresholds
+# Color palettes & thresholds
 CRAFT_COLORS = {
     "HVAC": "#1f77b4", "ELECTRIC": "#ff7f0e", "CARPENTRY": "#2ca02c",
     "PLUMBING": "#d62728", "MULTI-CRAFT": "#9467bd", "PAINT": "#8c564b",
@@ -26,7 +26,7 @@ SEASON_MONTHS = {
 }
 PCT_THRESHOLD = 5.0
 
-# — Sidebar filters
+# Sidebar filters
 st.sidebar.header("Filters")
 
 @st.cache_data
@@ -54,7 +54,7 @@ else:
     months_sel = (None, None)
     season_months = None
 
-# — Load & filter work-orders
+# Load & filter work-orders
 @st.cache_data
 def load_orders(years, months, season_months):
     df = pd.read_csv("DF_WO_GaTech.csv", parse_dates=["WORKDATE"])
@@ -74,12 +74,12 @@ def load_orders(years, months, season_months):
 
 orders = load_orders(years_sel, months_sel, season_months)
 
-# — Count crafts per building
+# Count crafts per building
 craft_counts = orders.groupby("FAC_ID")["CRAFT"].value_counts().unstack(fill_value=0)
 order_totals  = craft_counts.sum(axis=1)
 max_total     = order_totals.max() or 1
 
-# — Load campus footprints
+# Load campus footprints
 @st.cache_data
 def load_buildings():
     g = gpd.read_file("campus_buildings.geojson")
@@ -93,11 +93,13 @@ def load_buildings():
 
 gdf = load_buildings()
 
-# — Manual name overrides
+# Manual name overrides
 manual_map = {
     "COLLEGE OF COMPUTING": "COLL OF COMPUTI",
     "COC":                   "COLL OF COMPUTI",
     "575 14TH STREET":       "575 14TH STREET",
+
+    # Add more here when confirmed
 }
 
 def find_fac_id(name):
@@ -111,14 +113,14 @@ def find_fac_id(name):
     matches = get_close_matches(nm, craft_counts.index, n=1, cutoff=0.7)
     return matches[0] if matches else None
 
-# — Compute total orders PER feature
+# Compute total orders PER feature
 def lookup_total(name):
     fid = find_fac_id(name)
     return int(order_totals.get(fid, 0))
 
 gdf["order_sum"] = gdf["FAC_NAME"].apply(lookup_total)
 
-# — Heat-map color: gray if zero, else at least 20% into “OrRd”
+# Heat-map color: gray if zero, else at least 20% into “OrRd”
 cmap = cm.get_cmap("OrRd")
 def heat_color(n):
     if n <= 0:
@@ -130,7 +132,7 @@ def heat_color(n):
 
 gdf["fill_color"] = gdf["order_sum"].apply(heat_color)
 
-# — Pie chart generator (cached)
+# Pie chart generator
 @st.cache_data
 def pie_data_uri(idx, vals):
     s = pd.Series(vals, index=idx)
@@ -149,7 +151,7 @@ def make_pie(counts):
     key = (tuple(counts.index), tuple(counts.values))
     return pie_data_uri(*key)
 
-# — Build per-feature tooltip HTML
+# Build per-feature tooltip HTML
 def build_tooltip(row):
     nm = find_fac_id(row["FAC_NAME"])
     if not nm or nm not in craft_counts.index:
@@ -176,7 +178,7 @@ def build_tooltip(row):
 
 gdf["tooltip_html"] = gdf.apply(build_tooltip, axis=1)
 
-# — Render PyDeck map
+# Render PyDeck map
 view = pdk.ViewState(latitude=33.7756, longitude=-84.3963, zoom=16)
 layer = pdk.Layer(
     "GeoJsonLayer",
@@ -197,5 +199,6 @@ deck = pdk.Deck(
 
 st.write("Hover a building for its work-order pie chart and heat color.")
 st.pydeck_chart(deck, use_container_width=True)
+
 
 
