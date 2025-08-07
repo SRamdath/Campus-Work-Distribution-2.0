@@ -4,6 +4,7 @@ import geopandas as gpd
 import pydeck as pdk
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import matplotlib.cm as cm
 from io import BytesIO
 import base64
 from difflib import get_close_matches
@@ -79,8 +80,10 @@ def load_and_filter_orders(years, months, season):
 
 df = load_and_filter_orders(years_sel, months_sel, season_months)
 
-# ─── Precompute craft counts ────────────────────────────────────────────────
+# ─── Count up total crafts per FAC_ID ────────────────────────────────────────
 craft_counts = df.groupby("FAC_ID")["CRAFT"].value_counts().unstack(fill_value=0)
+order_sums   = craft_counts.sum(axis=1)       # total orders per building
+max_orders   = order_sums.max() or 1          # avoid zero-division
 
 # ─── Load building footprints ───────────────────────────────────────────────
 @st.cache_data
@@ -96,19 +99,28 @@ def load_buildings():
 
 gdf = load_buildings()
 
-# Manual overrides + fuzzy matcher 
+# ─── Compute a “heat color” per footprint ───────────────────────────────────
+cmap = cm.get_cmap("OrRd")
+def compute_color(total):
+    if total <= 0:
+        return [200, 200, 200, 80]   # light gray for zero
+    ratio = float(total) / max_orders
+    r, g, b, _ = cmap(ratio)
+    return [int(r*255), int(g*255), int(b*255), 180]
+
+# attach totals + fill_color
+gdf["order_sum"]   = gdf["FAC_NAME"].map(order_sums).fillna(0)
+gdf["fill_color"]  = gdf["order_sum"].apply(compute_color)
+
+# ─── Matching FAC_NAME → FAC_ID (manual + fuzzy) ────────────────────────────
 manual_map = {
     "COLLEGE OF COMPUTING": "COLL OF COMPUTI",
     "COC":                   "COLL OF COMPUTI",
-    "575 14TH STREET":       "575 14TH STREET",  # override invalid fuzzy pick
-    # add more overrides here.
+    "575 14TH STREET":       "575 14TH STREET",
+    # …add more overrides…
 }
 
 def find_df_key(name: str):
-    """
-    Returns (matched_key, method)
-    method in {'manual','exact','fuzzy','none'}
-    """
     if not isinstance(name, str):
         return None, "none"
     n = name.strip()
@@ -119,76 +131,75 @@ def find_df_key(name: str):
     m = get_close_matches(n, craft_counts.index, n=1, cutoff=0.7)
     return (m[0], "fuzzy") if m else (None, "none")
 
-#  Display manual & fuzzy overrides ─
-log = []
-for b in sorted([x for x in gdf["FAC_NAME"] if isinstance(x, str)]):
-    key, method = find_df_key(b)
-    if method in ("manual", "fuzzy"):
-        log.append({"Building": b, "Matched FAC_ID": key, "Method": method})
-log_df = pd.DataFrame(log)
-st.sidebar.markdown("### Overrides review")
-st.sidebar.dataframe(log_df, use_container_width=True)
-
-# Pie-chart renderer (cached) 
+# ─── Pie‐chart renderer (cached) ─────────────────────────────────────────────
 @st.cache_data
 def make_pie_datauri_cached(idx, vals):
     s = pd.Series(vals, index=idx)
     fig, ax = plt.subplots(figsize=(2,2))
     cols = [CRAFT_COLORS.get(c, "#CCCCCC") for c in s.index]
-    auto = lambda p: f"{p:.0f}%" if p >= PCT_THRESHOLD else ""
+    auto = lambda p: f"{p:.0f}%" if p>=PCT_THRESHOLD else ""
     ax.pie(s, autopct=auto, startangle=90, colors=cols, wedgeprops={"edgecolor":"white"})
     ax.axis("equal")
     buf = BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", transparent=True)
-    plt.close(fig)
-    buf.seek(0)
+    plt.close(fig); buf.seek(0)
     return "data:image/png;base64," + base64.b64encode(buf.read()).decode()
 
 def make_pie_datauri(counts):
     key = (tuple(counts.index), tuple(counts.values))
     return make_pie_datauri_cached(*key)
 
-#  Tooltip HTML 
+# ─── Tooltip HTML ───────────────────────────────────────────────────────────
 def build_tooltip_html(row):
-    bname = row["FAC_NAME"]
-    key, method = find_df_key(bname)
-    # guard: must exist in craft_counts
-    if not key or key not in craft_counts.index:
-        return f"<div><strong>{bname}</strong><br>No work-order data</div>"
-    cnts = craft_counts.loc[key]
-    cnts = cnts[cnts > 0]
-    pct  = (cnts / cnts.sum() * 100).round(1)
-    uri  = make_pie_datauri(cnts)
+    nm, method = find_df_key(row["FAC_NAME"])
+    if not nm or nm not in craft_counts.index:
+        return f"<div><strong>{row['FAC_NAME']}</strong><br>No work-order data</div>"
+    ct  = craft_counts.loc[nm]
+    ct  = ct[ct>0]
+    pct = (ct/ct.sum()*100).round(1)
+    uri = make_pie_datauri(ct)
+
     lines = []
-    for craft, p in zip(cnts.index, pct):
+    for craft, p in zip(ct.index, pct):
         col = CRAFT_COLORS.get(craft, "#CCCCCC")
         sw  = f"<span style='display:inline-block;width:12px;height:12px;background:{col};margin-right:4px;'></span>"
         lines.append(f"{sw}{craft}: {p}%")
     legend = "<br>".join(lines)
+
     return (
-        "<div style='text-align:center;'>"
-          f"<strong>{bname}</strong><br>"
-          f"<img src='{uri}' width='120px'><br>"
-          "<div style='column-count:2;column-gap:8px;font-size:0.9em;overscroll-behavior:contain;'>"
-            f"{legend}"
-          "</div>"
+      "<div style='text-align:center;'>"
+        f"<strong>{row['FAC_NAME']}</strong><br>"
+        f"<img src='{uri}' width='120px'><br>"
+        "<div style='column-count:2; column-gap:8px; font-size:0.9em; overscroll-behavior:contain;'>"
+          f"{legend}"
         "</div>"
+      "</div>"
     )
 
 gdf["tooltip_html"] = gdf.apply(build_tooltip_html, axis=1)
 
-# Render map 
+# ─── Render Pydeck layer with heat-fill ────────────────────────────────────
 view = pdk.ViewState(latitude=33.7756, longitude=-84.3963, zoom=16, pitch=0)
 layer = pdk.Layer(
-    "GeoJsonLayer", data=gdf, pickable=True,
-    stroked=True, filled=True, extruded=False,
-    get_fill_color=[50,100,200,80], get_line_color=[255,255,255,200]
+    "GeoJsonLayer",
+    data=gdf,
+    pickable=True,
+    stroked=True,
+    filled=True,
+    extruded=False,
+    get_fill_color="fill_color",
+    get_line_color=[255,255,255,200],
 )
 deck = pdk.Deck(
     layers=[layer],
     initial_view_state=view,
-    tooltip={"html":"{tooltip_html}", "style":{"backgroundColor":"rgba(0,0,0,0.8)","color":"white"}}
+    tooltip={"html":"{tooltip_html}",
+             "style":{"backgroundColor":"rgba(0,0,0,0.8)","color":"white"}}
 )
 
+st.write("Hover over a building to see its pie-chart and hover‐colored footprint by total orders.")
+st.pydeck_chart(deck, use_container_width=True)
+
 st.write("Hover over a building to see its pie-chart and legend.")
+
 st.pydeck_chart(deck)
