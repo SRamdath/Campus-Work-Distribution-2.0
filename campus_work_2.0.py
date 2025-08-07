@@ -104,7 +104,7 @@ manual_map = {
     "COLLEGE OF COMPUTING": "COLL OF COMPUTI",
     "COC":                   "COLL OF COMPUTI",
     "575 14TH STREET":       "575 14TH STREET",
-    # add more overrides here...
+    # add more overrides here
 }
 
 def find_df_key(name: str):
@@ -204,4 +204,5 @@ deck = pdk.Deck(
 
 st.write("Hover over a building to see its pie-chart and color‐coded fill by total orders.")
 st.pydeck_chart(deck, use_container_width=True)
+
 
